@@ -7,72 +7,18 @@ from sklearn.preprocessing import OneHotEncoder
 from joblib import dump
 from pgeocode import Nominatim
 
-def scaling(group, l): # robust scaling because of the outliers present throughout the categories (extreme big values and skews)
-    scaler = RobustScaler()
-    group[l] = scaler.fit_transform(group[l])
-    #dump(scaler, "./price_scaler.joblib")
-
-def preprocessing(properties_data = pd.DataFrame):
-
-   # properties_data.drop(columns=["garden_surface", "terrace_surface", 'swimming_pool', "locality_name", 'equipped_kitchen', 'furnished',
-    #   'open_fire'] )
-
-    properties_data.state_of_building = properties_data.state_of_building.replace("To be renovated", "To renovate")
-
-    # scaling of numerical data
-    to_scale = ["living_area", "number_of_rooms"]
-    scaling(properties_data, to_scale) #scaling of numeric data with wide range
-    scaler = RobustScaler()
-    properties_data["price"] = scaler.fit_transform(properties_data[["price"]])
-    #price_scaled = scaler.fit_transform(price.reshape(-1, 1))
-    dump(scaler, "./price_scaler.joblib")
-
-    #encoding of categorical data
-    to_encode = ['type_of_property', 'subtype_of_property', 'state_of_building']
-    encoder = OneHotEncoder(sparse_output=False)
-    encoded = encoder.fit_transform(properties_data[to_encode])
-    one_hot_df = pd.DataFrame(encoded, columns=encoder.get_feature_names_out(to_encode))
-
-    encoded_df = pd.concat([properties_data, one_hot_df], axis=1)
-    encoded_df = encoded_df.drop(to_encode, axis=1)
-    """
-    # frequency encoding for locality because too many categories
-    frequency = encoded_df["locality_name"].value_counts(normalize=True)
-    encoded_df["locality_frequency"] = encoded_df["locality_name"].map(frequency)
-    """
+def create_postal_price_df(clean_data = pd.DataFrame):
     #level encoding (median price per code) for postal code
-    postal_mean_price = encoded_df.groupby("postal_code")["price"].mean()
-    encoded_df["postal_encoded"] = encoded_df["postal_code"].map(postal_mean_price)
+    postal_mean_price = clean_data.groupby("postal_code")["price"].mean()
+    clean_data["postal_encoded"] = clean_data["postal_code"].map(postal_mean_price)
+    return clean_data[['postal_code', 'postal_encoded']]
 
-    """
-    #add provinces and regions
-    gdf_pc = gpd.read_file("./postal-codes-belgium.geojson")
-    lookup = gdf_pc[["post_code", "province_name_french", "region_name_french"]].drop_duplicates()
-    lookup["post_code"] = lookup["post_code"].astype(int)
-
-    encoded_df = encoded_df.merge(lookup, left_on="postal_code", right_on="post_code", how="left")
-
-    prov_freq = encoded_df["province_name_french"].value_counts(normalize=True)
-    reg_freq  = encoded_df["region_name_french"].value_counts(normalize=True)
-
-    encoded_df["province_encoded"] = encoded_df["province_name_french"].map(prov_freq)
-    encoded_df["region_encoded"]    = encoded_df["region_name_french"].map(reg_freq)
-
-    df_model = encoded_df.drop(columns=[
-        "locality_name",
-        "postal_code",
-        "province_name_french",
-        "region_name_french",
-    ])
-
-    return df_model
-"""
-
+def frequency_encoder_reg_prov(clean_data: pd.DataFrame):
     geo = Nominatim("be")
 
     # 1) Get unique postal codes as strings
     postal_codes = (
-        encoded_df["postal_code"]
+         clean_data["postal_code"]
         .dropna()
         .astype(int)       # ensure clean integers
         .astype(str)       # convert to string for pgeocode
@@ -106,12 +52,12 @@ def preprocessing(properties_data = pd.DataFrame):
         }
     )
 
-    encoded_df["postal_code"] = encoded_df["postal_code"].astype(str)
+    clean_data["postal_code"] = clean_data["postal_code"].astype(str)
     geo_df["post_code"] = geo_df["post_code"].astype(str)
 
 
     # Merge into encoded_df
-    encoded_df = encoded_df.merge(
+    clean_data = clean_data.merge(
         geo_df[["post_code", "province_name", "region_name"]],
         left_on="postal_code",
         right_on="post_code",
@@ -119,20 +65,67 @@ def preprocessing(properties_data = pd.DataFrame):
     )
 
     # Frequency encoding
-    prov_freq = encoded_df["province_name"].value_counts(normalize=True)
-    reg_freq  = encoded_df["region_name"].value_counts(normalize=True)
+    prov_freq = clean_data["province_name"].value_counts(normalize=True)
+    reg_freq  = clean_data["region_name"].value_counts(normalize=True)
 
-    encoded_df["province_encoded"] = encoded_df["province_name"].map(prov_freq)
-    encoded_df["region_encoded"]   = encoded_df["region_name"].map(reg_freq)
+    clean_data["province_encoded"] = clean_data["province_name"].map(prov_freq)
+    clean_data["region_encoded"]   = clean_data["region_name"].map(reg_freq)
+
+    return clean_data[['postal_code', 'province_encoded', 'region_encoded']]
+
+def preprocessing_create_obj(clean_data = pd.DataFrame):
+
+    scaler = RobustScaler()
+    scaler.fit_transform(clean_data[["price"]])
+    #price_scaled = scaler.fit_transform(price.reshape(-1, 1))
+    dump(scaler, "./price_scaler.joblib")
+
+    # properties_data.drop(columns=["garden_surface", "terrace_surface", 'swimming_pool', "locality_name", 'equipped_kitchen', 'furnished',
+    #   'open_fire'] )
+
+    clean_data.state_of_building = clean_data.state_of_building.replace("To be renovated", "To renovate")
+
+    # scaling of numerical data
+    # to_scale = ["living_area", "number_of_rooms"]
+    #scaling(properties_data, to_scale) #scaling of numeric data with wide range
+    
+
+    #encoding of categorical data
+    to_encode = ['type_of_property', 'subtype_of_property', 'state_of_building']
+    encoder = OneHotEncoder(sparse_output=False)
+
+    one_hot_df = pd.DataFrame(encoder.fit_transform(clean_data[to_encode]), 
+                              columns=encoder.get_feature_names_out(to_encode))
+    
+    encoded_df = pd.concat([clean_data, one_hot_df], axis=1)
+    encoded_df = encoded_df.drop(to_encode, axis=1)
+
+    return scaler, encoder
+
+def preprocessing_new_data(clean_data, properties_data = pd.DataFrame):
+
+
+    scaler, encoder = preprocessing_create_obj(clean_data)
+
+    to_encode = ['type_of_property', 'subtype_of_property', 'state_of_building']
+    one_hot_df = pd.DataFrame(encoder.transform(properties_data[to_encode]), columns=encoder.get_feature_names_out(to_encode))
+    encoded_df = pd.concat([properties_data, one_hot_df], axis=1)
+    encoded_df = encoded_df.drop(to_encode, axis=1)
+   
+    postal_price_map = create_postal_price_df(clean_data)
+    user_postal_code = encoded_df['postal_code'].values[0]
+    encoded_df['postal_encoded'] = postal_price_map['postal_encoded'][postal_price_map['postal_code']==user_postal_code].values[0]
+     
+    region_prov_map = frequency_encoder_reg_prov(clean_data)
+    print(region_prov_map)
+    encoded_df['province_encoded'] = region_prov_map['province_encoded'][region_prov_map['postal_code']==user_postal_code]
+    encoded_df['region_encoded'] = region_prov_map['region_encoded'][region_prov_map['postal_code']==user_postal_code]
 
     # Drop unused columns
     df_model = encoded_df.drop(
         columns=[
             "locality_name",
             "postal_code",
-            "post_code",
-            "province_name",
-            "region_name",
         ]
     )
 
